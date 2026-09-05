@@ -1,8 +1,8 @@
-name: WebTorrent & Pixeldrain
+name: Transmission & FileMirage
 
 on:
   push:
-    branches: main
+    branches: Trans
     
   workflow_dispatch:
 
@@ -10,28 +10,21 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5' 
+      FILEMIRAGE_API_KEY: '9QQH-DGES-CWQZ-FXNV' # Optional: fill in if your account requires an API key, otherwise leave blank for anonymous guest upload
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/77b85f24-8683-48e7-8972-fb5539521b32.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/77b85f24-8683-48e7-8972-fb5539521b32.txt'
 
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Dependencies & WebTorrent
+      - name: Install Dependencies & Transmission
         run: |
           sudo apt update
-          # Install expect (provides 'unbuffer' for animated progress bars) and other tools
-          sudo apt install jq curl python3 python3-requests expect -y
-          
-          # Initialize a local package structure and install webtorrent locally
-          npm init -y
-          npm install webtorrent-cli
-          
-          # Make webtorrent binary available to the runner
-          echo "$(pwd)/node_modules/.bin" >> $GITHUB_PATH
+          # Install expect, 7z, transmission-cli, and other necessary tools
+          sudo apt install jq curl python3 python3-requests expect p7zip-full transmission-cli -y
 
-      - name: Download with WebTorrent (Live Progress)
+      - name: Download with Transmission (Live Progress)
         run: |
           mkdir -p "$FOLDER_PATH"
           
@@ -56,35 +49,75 @@ jobs:
               print("⚠️ No torrent links found in the fetch URL.")
               sys.exit(0)
 
-          print(f"✅ Found {len(links)} link(s). Starting WebTorrent...\n")
+          print(f"✅ Found {len(links)} link(s). Starting Transmission...\n")
 
-          # 'unbuffer' forces WebTorrent to output its visual progress bar.
-          # GitHub Actions will animate this beautifully in the logs!
-          cmd = ["unbuffer", "webtorrent", "download"] + links + ["--out", folder]
-          
-          process = subprocess.Popen(cmd)
+          for link in links:
+              print(f"📥 Downloading: {link}")
+              # -w sets the download directory, -m exits immediately after completion without seeding
+              cmd = ["transmission-cli", "-w", folder, "-m", link]
+              
+              process = subprocess.Popen(cmd)
 
-          def check_kill_switch():
-              while process.poll() is None:
-                  try:
-                      ks = requests.get(kill_url, timeout=5).text
-                      if "STOP.ALL.TORRENTS" in ks:
-                          print("\n🛑 Global kill switch activated! Killing WebTorrent...")
-                          process.terminate()
-                          break
-                  except:
-                      pass
-                  time.sleep(10)
+              def check_kill_switch():
+                  while process.poll() is None:
+                      try:
+                          ks = requests.get(kill_url, timeout=5).text
+                          if "STOP.ALL.TORRENTS" in ks:
+                              print("\n🛑 Global kill switch activated! Killing Transmission...")
+                              process.terminate()
+                              break
+                      except:
+                          pass
+                      time.sleep(10)
 
-          # Run the kill switch monitor in the background
-          threading.Thread(target=check_kill_switch, daemon=True).start()
+              # Run the kill switch monitor in the background
+              threading.Thread(target=check_kill_switch, daemon=True).start()
 
-          # Wait for WebTorrent to finish downloading
-          process.wait()
+              # Wait for Transmission to finish downloading the current link
+              process.wait()
+
           print("\n🎉 Download phase complete.")
           EOF
 
-      - name: Upload to Pixeldrain
+      - name: Smart Zipping & Splitting
+        run: |
+          python3 - << 'EOF'
+          import os, shutil, subprocess
+          root_dir = "downloaded_files"
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+          media_ext = video_ext + sub_ext
+          max_size_bytes = 7000 * 1024 * 1024
+
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+
+          if os.path.exists(root_dir):
+              for item in os.listdir(root_dir):
+                  item_path = os.path.join(root_dir, item)
+                  if os.path.isdir(item_path):
+                      videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
+                      if len(videos) > 3:
+                          zip_name = f"{item}.zip"
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(root_dir)
+                          if folder_size > max_size_bytes:
+                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                          else:
+                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
+                      else:
+                          for r, _, files in os.walk(item_path):
+                              for f in files:
+                                  if f.lower().endswith(media_ext):
+                                      dst = os.path.join(root_dir, f)
+                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                          shutil.rmtree(item_path, ignore_errors=True)
+          EOF
+
+      - name: Upload to FileMirage
         run: |
           if [ ! -d "$FOLDER_PATH" ]; then
               echo "❌ Error: Folder $FOLDER_PATH does not exist."
@@ -96,21 +129,23 @@ jobs:
               
               FILENAME=$(basename "$FILE")
               
-              # URL-encode the filename using jq (handles spaces, &, #, +, etc.)
-              ENCODED_FILENAME=$(jq -rn --arg x "$FILENAME" '$x|@uri')
+              echo "📤 Uploading: $FILENAME to FileMirage..."
               
-              echo "📤 Uploading: $FILENAME to Pixeldrain..."
+              # Build optional header array if API key is specified
+              AUTH_HEADER=()
+              if [ -n "${{ env.FILEMIRAGE_API_KEY }}" ]; then
+                  AUTH_HEADER=(-H "x-api-key: ${{ env.FILEMIRAGE_API_KEY }}")
+              fi
               
-              # Upload via Pixeldrain PUT API with API Key Auth
-              RESPONSE=$(curl -s -u ":${{ env.PIXELDRAIN_API_KEY }}" -T "$FILE" "https://pixeldrain.com/api/file/$ENCODED_FILENAME")
+              # Upload via FileMirage standard multipart form upload API
+              RESPONSE=$(curl -s -X POST "https://filemirage.com/api/upload" "${AUTH_HEADER[@]}" -F "file=@$FILE")
               
-              # Parse JSON response
-              SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
-              FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
+              # Parse response fields
+              SHARE_URL=$(echo "$RESPONSE" | jq -r '.url // .link // empty')
               
-              if [ "$SUCCESS" == "true" ]; then
+              if [ -n "$SHARE_URL" ] && [ "$SHARE_URL" != "null" ]; then
                   echo "✅ Successfully uploaded: $FILENAME"
-                  echo "🔗 Link: https://pixeldrain.com/u/$FILE_ID"
+                  echo "🔗 Link: $SHARE_URL"
                   echo "---------------------------------------------------"
               else
                   echo "❌ Failed to upload $FILENAME"
