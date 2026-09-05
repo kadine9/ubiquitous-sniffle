@@ -2,7 +2,7 @@ name: WebTorrent & FileMirage
 
 on:
   push:
-    branches: main
+    branches: Newmirage
     
   workflow_dispatch:
 
