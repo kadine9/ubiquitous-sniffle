@@ -10,9 +10,8 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5' 
+      PIXELDRAIN_API_KEY: '9QQH-DGES-CWQZ-FXNV' 
       FOLDER_PATH: 'downloaded_files'
-      # Adjust these URLs as needed
       LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
       KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
 
@@ -24,8 +23,9 @@ jobs:
           sudo apt update
           # Install expect (provides 'unbuffer' for animated progress bars) and other tools
           sudo apt install jq curl python3 python3-requests expect -y
-          # Install WebTorrent via npm (Fastest and officially supported for CI)
-          npm install -g webtorrent-cli
+          
+          # Install WebTorrent and ignore misconfigured sub-dependency scripts
+          npm install -g webtorrent-cli --ignore-scripts
 
       - name: Download with WebTorrent (Live Progress)
         run: |
