@@ -24,14 +24,20 @@ jobs:
           # Install expect (provides 'unbuffer' for animated progress bars) and other tools
           sudo apt install jq curl python3 python3-requests expect -y
           
-          # Install pnpm globally to satisfy the sub-dependency strictness
+          # Install pnpm globally
           npm install -g pnpm
           
-          # Install WebTorrent using pnpm so native modules can build correctly
+          # Setup pnpm environment paths
+          pnpm setup
+          export SHELL=/bin/bash
+          source ~/.bashrc
+          
+          # Install WebTorrent using pnpm with native modules enabled
           pnpm add -g webtorrent-cli
           
-          # Add the pnpm global bin directory to the GitHub Actions PATH
-          echo "$(pnpm bin -g)" >> $GITHUB_PATH
+          # Ensure pnpm global bin is permanently added to GitHub Actions PATH
+          echo "/home/runner/.local/share/pnpm" >> $GITHUB_PATH
+          echo "/home/runner/.local/share/pnpm/bin" >> $GITHUB_PATH
 
       - name: Download with WebTorrent (Live Progress)
         run: |
