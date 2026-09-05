@@ -1,8 +1,8 @@
-name: WebTorrent & Pixeldrain
+name: WebTorrent & FileMirage
 
 on:
   push:
-    branches: main
+    branches: Mirageweb
     
   workflow_dispatch:
 
@@ -10,10 +10,10 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5' 
+      FILEMIRAGE_API_KEY: '9QQH-DGES-CWQZ-FXNV' # Optional: fill in if your account requires an API key, otherwise leave blank for anonymous guest upload
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
+      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
 
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +21,8 @@ jobs:
       - name: Install Dependencies & WebTorrent
         run: |
           sudo apt update
-          # Install expect (provides 'unbuffer' for animated progress bars) and other tools
-          sudo apt install jq curl python3 python3-requests expect -y
+          # Install expect, 7z, and other necessary tools
+          sudo apt install jq curl python3 python3-requests expect p7zip-full -y
           
           # Initialize a local package structure and install webtorrent locally
           npm init -y
@@ -59,7 +59,6 @@ jobs:
           print(f"✅ Found {len(links)} link(s). Starting WebTorrent...\n")
 
           # 'unbuffer' forces WebTorrent to output its visual progress bar.
-          # GitHub Actions will animate this beautifully in the logs!
           cmd = ["unbuffer", "webtorrent", "download"] + links + ["--out", folder]
           
           process = subprocess.Popen(cmd)
@@ -84,7 +83,45 @@ jobs:
           print("\n🎉 Download phase complete.")
           EOF
 
-      - name: Upload to Pixeldrain
+      - name: Smart Zipping & Splitting
+        run: |
+          python3 - << 'EOF'
+          import os, shutil, subprocess
+          root_dir = "downloaded_files"
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+          media_ext = video_ext + sub_ext
+          max_size_bytes = 7000 * 1024 * 1024
+
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+
+          if os.path.exists(root_dir):
+              for item in os.listdir(root_dir):
+                  item_path = os.path.join(root_dir, item)
+                  if os.path.isdir(item_path):
+                      videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
+                      if len(videos) > 3:
+                          zip_name = f"{item}.zip"
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(root_dir)
+                          if folder_size > max_size_bytes:
+                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                          else:
+                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
+                      else:
+                          for r, _, files in os.walk(item_path):
+                              for f in files:
+                                  if f.lower().endswith(media_ext):
+                                      dst = os.path.join(root_dir, f)
+                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                          shutil.rmtree(item_path, ignore_errors=True)
+          EOF
+
+      - name: Upload to FileMirage
         run: |
           if [ ! -d "$FOLDER_PATH" ]; then
               echo "❌ Error: Folder $FOLDER_PATH does not exist."
@@ -96,21 +133,23 @@ jobs:
               
               FILENAME=$(basename "$FILE")
               
-              # URL-encode the filename using jq (handles spaces, &, #, +, etc.)
-              ENCODED_FILENAME=$(jq -rn --arg x "$FILENAME" '$x|@uri')
+              echo "📤 Uploading: $FILENAME to FileMirage..."
               
-              echo "📤 Uploading: $FILENAME to Pixeldrain..."
+              # Build optional header array if API key is specified
+              AUTH_HEADER=()
+              if [ -n "${{ env.FILEMIRAGE_API_KEY }}" ]; then
+                  AUTH_HEADER=(-H "x-api-key: ${{ env.FILEMIRAGE_API_KEY }}")
+              fi
               
-              # Upload via Pixeldrain PUT API with API Key Auth
-              RESPONSE=$(curl -s -u ":${{ env.PIXELDRAIN_API_KEY }}" -T "$FILE" "https://pixeldrain.com/api/file/$ENCODED_FILENAME")
+              # Upload via FileMirage standard multipart form upload API
+              RESPONSE=$(curl -s -X POST "https://filemirage.com/api/upload" "${AUTH_HEADER[@]}" -F "file=@$FILE")
               
-              # Parse JSON response
-              SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
-              FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
+              # Parse response fields (adjusts according to typical JSON structure, falls back to raw print if format varies)
+              SHARE_URL=$(echo "$RESPONSE" | jq -r '.url // .link // empty')
               
-              if [ "$SUCCESS" == "true" ]; then
+              if [ -n "$SHARE_URL" ] && [ "$SHARE_URL" != "null" ]; then
                   echo "✅ Successfully uploaded: $FILENAME"
-                  echo "🔗 Link: https://pixeldrain.com/u/$FILE_ID"
+                  echo "🔗 Link: $SHARE_URL"
                   echo "---------------------------------------------------"
               else
                   echo "❌ Failed to upload $FILENAME"
