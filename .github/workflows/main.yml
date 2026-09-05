@@ -1,0 +1,116 @@
+name: WebTorrent & Pixeldrain
+
+on:
+  push:
+    branches: main
+    
+  workflow_dispatch:
+
+jobs:
+  torrent-upload:
+    runs-on: ubuntu-latest
+    env:
+      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5' 
+      FOLDER_PATH: 'downloaded_files'
+      # Adjust these URLs as needed
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt'
+
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Dependencies & WebTorrent
+        run: |
+          sudo apt update
+          # Install expect (provides 'unbuffer' for animated progress bars) and other tools
+          sudo apt install jq curl python3 python3-requests expect -y
+          # Install WebTorrent via npm (Fastest and officially supported for CI)
+          npm install -g webtorrent-cli
+
+      - name: Download with WebTorrent (Live Progress)
+        run: |
+          mkdir -p "$FOLDER_PATH"
+          
+          python3 - << 'EOF'
+          import requests, time, os, subprocess, threading, sys
+
+          link_url = os.environ.get('LINK_FETCH_URL')
+          kill_url = os.environ.get('KILL_SWITCH_URL')
+          folder = os.environ.get('FOLDER_PATH')
+
+          print("📥 Fetching links...")
+          try:
+              page = requests.get(link_url, timeout=10).text
+          except Exception as e:
+              print(f"❌ Failed to fetch links: {e}")
+              sys.exit(1)
+
+          # Extract valid links
+          links = [line.strip() for line in page.splitlines() if line.strip() and not line.startswith('#')]
+
+          if not links:
+              print("⚠️ No torrent links found in the fetch URL.")
+              sys.exit(0)
+
+          print(f"✅ Found {len(links)} link(s). Starting WebTorrent...\n")
+
+          # 'unbuffer' forces WebTorrent to output its visual progress bar.
+          # GitHub Actions will animate this beautifully in the logs!
+          cmd = ["unbuffer", "webtorrent", "download"] + links + ["--out", folder]
+          
+          process = subprocess.Popen(cmd)
+
+          def check_kill_switch():
+              while process.poll() is None:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print("\n🛑 Global kill switch activated! Killing WebTorrent...")
+                          process.terminate()
+                          break
+                  except:
+                      pass
+                  time.sleep(10)
+
+          # Run the kill switch monitor in the background
+          threading.Thread(target=check_kill_switch, daemon=True).start()
+
+          # Wait for WebTorrent to finish downloading
+          process.wait()
+          print("\n🎉 Download phase complete.")
+          EOF
+
+      - name: Upload to Pixeldrain
+        run: |
+          if [ ! -d "$FOLDER_PATH" ]; then
+              echo "❌ Error: Folder $FOLDER_PATH does not exist."
+              exit 1
+          fi
+
+          # Using -print0 and read -d '' ensures spaces and special characters are perfectly preserved
+          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS= read -r -d '' FILE; do
+              
+              FILENAME=$(basename "$FILE")
+              
+              # URL-encode the filename using jq (handles spaces, &, #, +, etc.)
+              ENCODED_FILENAME=$(jq -rn --arg x "$FILENAME" '$x|@uri')
+              
+              echo "📤 Uploading: $FILENAME to Pixeldrain..."
+              
+              # Upload via Pixeldrain PUT API with API Key Auth
+              RESPONSE=$(curl -s -u ":${{ env.PIXELDRAIN_API_KEY }}" -T "$FILE" "https://pixeldrain.com/api/file/$ENCODED_FILENAME")
+              
+              # Parse JSON response
+              SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+              FILE_ID=$(echo "$RESPONSE" | jq -r '.id')
+              
+              if [ "$SUCCESS" == "true" ]; then
+                  echo "✅ Successfully uploaded: $FILENAME"
+                  echo "🔗 Link: https://pixeldrain.com/u/$FILE_ID"
+                  echo "---------------------------------------------------"
+              else
+                  echo "❌ Failed to upload $FILENAME"
+                  echo "API Response: $RESPONSE"
+                  exit 1
+              fi
+          done
