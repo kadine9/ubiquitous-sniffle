@@ -12,8 +12,8 @@ jobs:
     env:
       FILEMIRAGE_API_KEY: '9QQH-DGES-CWQZ-FXNV' # Optional: fill in if your account requires an API key, otherwise leave blank for anonymous guest upload
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/77b85f24-8683-48e7-8972-fb5539521b32.txt'
-      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/77b85f24-8683-48e7-8972-fb5539521b32.txt'
+      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
+      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
 
     steps:
       - uses: actions/checkout@v4
