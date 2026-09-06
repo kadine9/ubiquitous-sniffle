@@ -1,8 +1,8 @@
-name: Transmission & FileMirage
+name: Transmission & Pixeldrain
 
 on:
   push:
-    branches: Trans
+    branches: Transpix
     
   workflow_dispatch:
 
@@ -10,10 +10,10 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_KEY: '9QQH-DGES-CWQZ-FXNV' # Optional: fill in if your account requires an API key, otherwise leave blank for anonymous guest upload
+      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/21aa0444-ae06-42a3-899c-4f8977132625'
+      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
+      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
 
     steps:
       - uses: actions/checkout@v4
@@ -21,10 +21,9 @@ jobs:
       - name: Install Dependencies & Transmission
         run: |
           sudo apt update
-          # Install expect, 7z, transmission-cli, and other necessary tools
-          sudo apt install jq curl python3 python3-requests expect p7zip-full transmission-cli -y
+          sudo apt install jq curl python3 python3-requests p7zip-full transmission-cli -y
 
-      - name: Download with Transmission (Live Progress)
+      - name: Download with Transmission (Concurrent & Live Progress)
         run: |
           mkdir -p "$FOLDER_PATH"
           
@@ -42,41 +41,57 @@ jobs:
               print(f"❌ Failed to fetch links: {e}")
               sys.exit(1)
 
-          # Extract valid links
           links = [line.strip() for line in page.splitlines() if line.strip() and not line.startswith('#')]
 
           if not links:
               print("⚠️ No torrent links found in the fetch URL.")
               sys.exit(0)
 
-          print(f"✅ Found {len(links)} link(s). Starting Transmission...\n")
+          print(f"✅ Found {len(links)} link(s). Starting concurrent Transmission downloads...\n")
 
-          for link in links:
-              print(f"📥 Downloading: {link}")
-              # -w sets the download directory, -m exits immediately after completion without seeding
+          processes = []
+          kill_triggered = False
+
+          def download_torrent(link):
+              global kill_triggered
               cmd = ["transmission-cli", "-w", folder, "-m", link]
-              
-              process = subprocess.Popen(cmd)
+              print(f"🚀 Starting download: {link}")
+              proc = subprocess.Popen(cmd)
+              processes.append(proc)
+              while proc.poll() is None:
+                  if kill_triggered:
+                      proc.terminate()
+                      break
+                  time.sleep(2)
+              proc.wait()
 
-              def check_kill_switch():
-                  while process.poll() is None:
-                      try:
-                          ks = requests.get(kill_url, timeout=5).text
-                          if "STOP.ALL.TORRENTS" in ks:
-                              print("\n🛑 Global kill switch activated! Killing Transmission...")
-                              process.terminate()
-                              break
-                      except:
-                          pass
-                      time.sleep(10)
+          threads = []
+          for link in links:
+              t = threading.Thread(target=download_torrent, args=(link,))
+              t.start()
+              threads.append(t)
 
-              # Run the kill switch monitor in the background
-              threading.Thread(target=check_kill_switch, daemon=True).start()
+          while any(t.is_alive() for t in threads):
+              if kill_url:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print("\n🛑 Global kill switch activated! Terminating all downloads...")
+                          kill_triggered = True
+                          for p in processes:
+                              try:
+                                  p.terminate()
+                              except:
+                                  pass
+                          break
+                  except:
+                      pass
+              time.sleep(5)
 
-              # Wait for Transmission to finish downloading the current link
-              process.wait()
+          for t in threads:
+              t.join()
 
-          print("\n🎉 Download phase complete.")
+          print("\n🎉 Concurrent download phase complete.")
           EOF
 
       - name: Smart Zipping & Splitting
@@ -117,39 +132,52 @@ jobs:
                           shutil.rmtree(item_path, ignore_errors=True)
           EOF
 
-      - name: Upload to FileMirage
+      - name: Upload to Pixeldrain
         run: |
-          if [ ! -d "$FOLDER_PATH" ]; then
-              echo "❌ Error: Folder $FOLDER_PATH does not exist."
-              exit 1
-          fi
+          python3 - << 'EOF'
+          import os
+          import requests
 
-          # Using -print0 and read -d '' ensures spaces and special characters are perfectly preserved
-          find "$FOLDER_PATH" -type f -print0 | sort -z | while IFS= read -r -d '' FILE; do
-              
-              FILENAME=$(basename "$FILE")
-              
-              echo "📤 Uploading: $FILENAME to FileMirage..."
-              
-              # Build optional header array if API key is specified
-              AUTH_HEADER=()
-              if [ -n "${{ env.FILEMIRAGE_API_KEY }}" ]; then
-                  AUTH_HEADER=(-H "x-api-key: ${{ env.FILEMIRAGE_API_KEY }}")
-              fi
-              
-              # Upload via FileMirage standard multipart form upload API
-              RESPONSE=$(curl -s -X POST "https://filemirage.com/api/upload" "${AUTH_HEADER[@]}" -F "file=@$FILE")
-              
-              # Parse response fields
-              SHARE_URL=$(echo "$RESPONSE" | jq -r '.url // .link // empty')
-              
-              if [ -n "$SHARE_URL" ] && [ "$SHARE_URL" != "null" ]; then
-                  echo "✅ Successfully uploaded: $FILENAME"
-                  echo "🔗 Link: $SHARE_URL"
-                  echo "---------------------------------------------------"
-              else
-                  echo "❌ Failed to upload $FILENAME"
-                  echo "API Response: $RESPONSE"
-                  exit 1
-              fi
-          done
+          api_key = os.environ.get("PIXELDRAIN_API_KEY")
+          folder_path = os.environ.get("FOLDER_PATH", "downloaded_files")
+
+          if not api_key:
+              print("❌ Error: PIXELDRAIN_API_KEY is not set.")
+              exit(1)
+
+          if not os.path.exists(folder_path):
+              print(f"❌ Error: Folder {folder_path} does not exist.")
+              exit(1)
+
+          for root, dirs, files in os.walk(folder_path):
+              for filename in sorted(files):
+                  if ".!qB" in filename or ".part" in filename:
+                      continue
+                  
+                  file_path = os.path.join(root, filename)
+                  print(f"📤 Uploading: {filename}...")
+
+                  try:
+                      with open(file_path, "rb") as f:
+                          response = requests.post(
+                              "https://pixeldrain.com/api/file",
+                              auth=("", api_key),
+                              files={"file": (filename, f)}
+                          )
+                      
+                      res_json = response.json()
+                      success = res_json.get("success", False)
+                      file_id = res_json.get("id")
+
+                      if success and file_id:
+                          print(f"✅ Successfully uploaded: {filename} (ID: {file_id})")
+                          print(f"🔗 Link: https://pixeldrain.com/u/{file_id}")
+                          os.remove(file_path)
+                          print(f"🗑️ Cleaned up local file: {filename}")
+                      else:
+                          print(f"❌ Failed to upload {filename}. Response: {response.text}")
+                          exit(1)
+                  except Exception as e:
+                      print(f"❌ Exception during upload of {filename}: {e}")
+                      exit(1)
+          EOF
