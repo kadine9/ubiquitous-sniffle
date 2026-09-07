@@ -46,8 +46,8 @@ jobs:
           import requests, time, os
           from datetime import datetime
 
-          link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6'
-          kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6'
+          link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
+          kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
           folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
