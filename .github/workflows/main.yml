@@ -1,8 +1,8 @@
-name: Transmission & Pixeldrain
+name: qBittorrent & Pixeldrain
 
 on:
   push:
-    branches: Transpix
+    branches: Pix
     
   workflow_dispatch:
 
@@ -18,82 +18,99 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Dependencies & Transmission
-        run: |
-          sudo apt update
-          sudo apt install jq curl python3 python3-requests p7zip-full transmission-cli -y
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests -y
 
-      - name: Download with Transmission (Concurrent & Live Progress)
+      - name: Download with qBittorrent & Boxed Progress
         run: |
           mkdir -p "$FOLDER_PATH"
-          
+          touch added_links.txt
+          mkdir -p ~/.config/qBittorrent
+          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
+          [LegalNotice]
+          Accepted=true
+          [Preferences]
+          WebUI\Port=8080
+          WebUI\LocalHostAuth=false
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          Queueing\QueueEnabled=true
+          Queueing\MaxActiveDownloads=10
+          Queueing\MaxActiveTorrents=25
+          EOF
+
+          qbittorrent-nox -d
+          sleep 5
+
           python3 - << 'EOF'
-          import requests, time, os, subprocess, threading, sys
+          import requests, time, os
+          from datetime import datetime
 
-          link_url = os.environ.get('LINK_FETCH_URL')
-          kill_url = os.environ.get('KILL_SWITCH_URL')
-          folder = os.environ.get('FOLDER_PATH')
+          link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6'
+          kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/5ec77733-7e65-4d8f-b408-54eb01a369f6'
+          folder_path = 'downloaded_files'
+          absolute_save_path = os.path.abspath(folder_path)
+          added_links = set()
+          update_count = 0
 
-          print("📥 Fetching links...")
-          try:
-              page = requests.get(link_url, timeout=10).text
-          except Exception as e:
-              print(f"❌ Failed to fetch links: {e}")
-              sys.exit(1)
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
 
-          links = [line.strip() for line in page.splitlines() if line.strip() and not line.startswith('#')]
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
 
-          if not links:
-              print("⚠️ No torrent links found in the fetch URL.")
-              sys.exit(0)
-
-          print(f"✅ Found {len(links)} link(s). Starting concurrent Transmission downloads...\n")
-
-          processes = []
-          kill_triggered = False
-
-          def download_torrent(link):
-              global kill_triggered
-              cmd = ["transmission-cli", "-w", folder, "-m", link]
-              print(f"🚀 Starting download: {link}")
-              proc = subprocess.Popen(cmd)
-              processes.append(proc)
-              while proc.poll() is None:
-                  if kill_triggered:
-                      proc.terminate()
-                      break
-                  time.sleep(2)
-              proc.wait()
-
-          threads = []
-          for link in links:
-              t = threading.Thread(target=download_torrent, args=(link,))
-              t.start()
-              threads.append(t)
-
-          while any(t.is_alive() for t in threads):
               if kill_url:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n🛑 Global kill switch activated! Terminating all downloads...")
-                          kill_triggered = True
-                          for p in processes:
-                              try:
-                                  p.terminate()
-                              except:
-                                  pass
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Pixeldrain] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
-                  except:
-                      pass
-              time.sleep(5)
+                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
+                      if targets:
+                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                          for t in res:
+                              if any(tg in t['name'].lower() for tg in targets if tg):
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+                  except Exception: pass
 
-          for t in threads:
-              t.join()
+              if link_url:
+                  try:
+                      page = requests.get(link_url, timeout=5).text
+                      for link in page.splitlines():
+                          link = link.strip()
+                          if link and not link.startswith('#') and link not in added_links:
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              added_links.add(link)
+                  except Exception: pass
 
-          print("\n🎉 Concurrent download phase complete.")
+              try:
+                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                  print(f"\n" + "="*50)
+                  print(f"🔄 [GH-qBittorrent-Pixeldrain] Progress Update #{update_count} | {timestamp}")
+                  print("-"*50)
+                  if not res:
+                      print("📥 Waiting for active torrents...")
+                      all_done = False
+                  else:
+                      all_done = True
+                      for t in res:
+                          prog = int(t.get('progress', 0) * 100)
+                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                          eta_str = fmt_eta(t.get('eta', -1))
+                          print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                          if prog < 100: all_done = False
+                  print("="*50 + "\n")
+                  if all_done and res: break
+              except Exception: pass
+              time.sleep(10)
           EOF
 
+          pkill qbittorrent-nox || true
+          sleep 2
+          
       - name: Smart Zipping & Splitting
         run: |
           python3 - << 'EOF'
@@ -171,7 +188,6 @@ jobs:
 
                       if success and file_id:
                           print(f"✅ Successfully uploaded: {filename} (ID: {file_id})")
-                          print(f"🔗 Link: https://pixeldrain.com/u/{file_id}")
                           os.remove(file_path)
                           print(f"🗑️ Cleaned up local file: {filename}")
                       else:
