@@ -1,4 +1,4 @@
-name: qBittorrent & Pixeldrain
+name: qBittorrent & Buzzheavier
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      PIXELDRAIN_API_KEY: '0bfe0b11-611d-4bb3-9b4c-36dbaa5a1fd5'
+      BUZZHEAVIER_API_KEY: 'FINS3KA5OL68CPW5MEYD'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
       KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/d5777cc7-e5c5-4bc8-9b31-60d96e7862d8'
@@ -66,7 +66,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Pixeldrain] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Buzzheavier] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -89,7 +89,7 @@ jobs:
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
-                  print(f"🔄 [GH-qBittorrent-Pixeldrain] Progress Update #{update_count} | {timestamp}")
+                  print(f"🔄 [GH-qBittorrent-Buzzheavier] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
                   if not res:
                       print("📥 Waiting for active torrents...")
@@ -111,10 +111,11 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
           
-      - name: Smart Zipping & Splitting
+      - name: Smart Zipping & Splitting (Recursive Nested Subfolders)
         run: |
           python3 - << 'EOF'
           import os, shutil, subprocess
+
           root_dir = "downloaded_files"
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
           sub_ext = ('.srt', '.ass', '.vtt', '.sub')
@@ -125,41 +126,53 @@ jobs:
               return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
 
           if os.path.exists(root_dir):
-              for item in os.listdir(root_dir):
-                  item_path = os.path.join(root_dir, item)
-                  if os.path.isdir(item_path):
-                      videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
-                      if len(videos) > 3:
-                          zip_name = f"{item}.zip"
-                          folder_size = get_dir_size(item_path)
-                          orig = os.getcwd()
-                          os.chdir(root_dir)
-                          if folder_size > max_size_bytes:
-                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                          else:
-                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                          os.chdir(orig)
-                          shutil.rmtree(item_path)
+              # Walk bottom-up so nested subfolders are handled before parent folders
+              for current_root, dirs, files in os.walk(root_dir, topdown=False):
+                  if current_root == root_dir:
+                      continue
+                  
+                  videos = [f for f in files if f.lower().endswith(video_ext)]
+                  
+                  # If folder has multiple videos or is a distinct structural folder we want to zip up
+                  if len(videos) > 3:
+                      folder_name = os.path.basename(current_root)
+                      parent_dir = os.path.dirname(current_root)
+                      zip_name = f"{folder_name}.zip"
+                      folder_size = get_dir_size(current_root)
+                      
+                      orig = os.getcwd()
+                      os.chdir(parent_dir)
+                      if folder_size > max_size_bytes:
+                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, folder_name], check=True)
                       else:
-                          for r, _, files in os.walk(item_path):
-                              for f in files:
-                                  if f.lower().endswith(media_ext):
-                                      dst = os.path.join(root_dir, f)
-                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                          shutil.rmtree(item_path, ignore_errors=True)
+                          subprocess.run(["7z", "a", "-mx0", zip_name, folder_name], check=True)
+                      os.chdir(orig)
+                      
+                      shutil.rmtree(current_root)
+                  else:
+                      # Flatten loose media files up to the main root_dir or handle them cleanly
+                      for f in files:
+                          if f.lower().endswith(media_ext):
+                              src = os.path.join(current_root, f)
+                              dst = os.path.join(root_dir, f)
+                              if not os.path.exists(dst):
+                                  shutil.move(src, dst)
+                      # Clean up empty subdirectories
+                      if not os.listdir(current_root):
+                          os.rmdir(current_root)
           EOF
 
-      - name: Upload to Pixeldrain
+      - name: Upload to Buzzheavier
         run: |
           python3 - << 'EOF'
           import os
           import requests
 
-          api_key = os.environ.get("PIXELDRAIN_API_KEY")
+          api_key = os.environ.get("BUZZHEAVIER_API_KEY")
           folder_path = os.environ.get("FOLDER_PATH", "downloaded_files")
 
           if not api_key:
-              print("❌ Error: PIXELDRAIN_API_KEY is not set.")
+              print("❌ Error: BUZZHEAVIER_API_KEY is not set.")
               exit(1)
 
           if not os.path.exists(folder_path):
@@ -172,26 +185,23 @@ jobs:
                       continue
                   
                   file_path = os.path.join(root, filename)
-                  print(f"📤 Uploading: {filename}...")
+                  print(f"📤 Uploading to Buzzheavier: {filename}...")
 
                   try:
                       with open(file_path, "rb") as f:
                           response = requests.post(
-                              "https://pixeldrain.com/api/file",
-                              auth=("", api_key),
+                              "https://buzzheavier.com/api/v1/file",
+                              headers={"Authorization": f"Bearer {api_key}"},
                               files={"file": (filename, f)}
                           )
                       
-                      res_json = response.json()
-                      success = res_json.get("success", False)
-                      file_id = res_json.get("id")
-
-                      if success and file_id:
-                          print(f"✅ Successfully uploaded: {filename} (ID: {file_id})")
+                      # Check response validity based on standard API design
+                      if response.status_code in [200, 201]:
+                          print(f"✅ Successfully uploaded: {filename}")
                           os.remove(file_path)
                           print(f"🗑️ Cleaned up local file: {filename}")
                       else:
-                          print(f"❌ Failed to upload {filename}. Response: {response.text}")
+                          print(f"❌ Failed to upload {filename}. Status: {response.status_code} Response: {response.text}")
                           exit(1)
                   except Exception as e:
                       print(f"❌ Exception during upload of {filename}: {e}")
