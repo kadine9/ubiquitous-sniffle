@@ -1,225 +1,63 @@
-name: Aria2 & Filemirage
+name: Quick Buzzheavier Test Upload
 
 on:
-  push:
-    branches: New
   workflow_dispatch:
 
 jobs:
-  torrent-upload:
+  test-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
-      FOLDER_PATH: 'downloaded_files'
-      # Leave these empty, fill in when ready
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/9b42af17-4285-48eb-ae98-85ec4a90b399'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/9b42af17-4285-48eb-ae98-85ec4a90b399'
+      BUZZHEAVIER_API_KEY: 'FINS3KA5OL68CPW5MEYD'
 
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install Dependencies
-        run: sudo apt update && sudo apt install aria2 jq curl zip p7zip-full python3 python3-requests -y
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Download with Aria2 & Boxed Progress
+      - name: Create Test File
         run: |
-          mkdir -p "$FOLDER_PATH"
-          touch added_links.txt
-          
-          # Start aria2 as a daemon with JSON-RPC enabled
-          aria2c --enable-rpc=true \
-                 --rpc-listen-port=6800 \
-                 --rpc-listen-all=true \
-                 --rpc-allow-origin-all=true \
-                 --dir="$(pwd)/$FOLDER_PATH" \
-                 --max-concurrent-downloads=10 \
-                 --bt-max-peers=150 \
-                 --seed-time=0 \
-                 --summary-interval=0 \
-                 --daemon=true
-                 
-          sleep 5
+          mkdir -p test_folder
+          echo "Hello Buzzheavier, this is a quick test file generated at $(date)" > test_folder/sample_test.txt
 
-          python3 - << 'EOF'
-          import requests, time, os
-          from datetime import datetime
-
-          # Fill in your URLs here
-          link_url = os.environ.get('LINK_FETCH_URL', '')
-          kill_url = os.environ.get('KILL_SWITCH_URL', '')
-          
-          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
-          absolute_save_path = os.path.abspath(folder_path)
-          added_links = set()
-          update_count = 0
-
-          def rpc(method, params=None):
-              if params is None: params = []
-              try:
-                  payload = {"jsonrpc": "2.0", "id": "1", "method": method, "params": params}
-                  res = requests.post('http://127.0.0.1:6800/jsonrpc', json=payload, timeout=2)
-                  return res.json().get('result', [])
-              except Exception:
-                  return []
-
-          def fmt_eta(sec):
-              if sec is None or sec < 0 or sec >= 8640000: return "∞"
-              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
-              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
-
-          def get_task_name(task):
-              if 'bittorrent' in task and 'info' in task['bittorrent'] and 'name' in task['bittorrent']['info']:
-                  return task['bittorrent']['info']['name']
-              if 'files' in task and task['files'] and 'path' in task['files'][0] and task['files'][0]['path']:
-                  return os.path.basename(task['files'][0]['path'])
-              if 'infoHash' in task:
-                  return f"Magnet-{task['infoHash'][:8]}"
-              return "Unknown"
-
-          while True:
-              update_count += 1
-              timestamp = datetime.now().strftime("%H:%M:%S")
-
-              if kill_url:
-                  try:
-                      ks = requests.get(kill_url, timeout=5).text
-                      if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-Aria2-Filemirage] Global kill switch activated! | {timestamp}\n" + "="*50)
-                          break
-                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
-                      if targets:
-                          active = rpc("aria2.tellActive")
-                          waiting = rpc("aria2.tellWaiting", [0, 1000])
-                          for t in active + waiting:
-                              if any(tg in get_task_name(t).lower() for tg in targets if tg):
-                                  rpc("aria2.remove", [t['gid']])
-                  except Exception: pass
-
-              if link_url:
-                  try:
-                      page = requests.get(link_url, timeout=5).text
-                      for link in page.splitlines():
-                          link = link.strip()
-                          if link and not link.startswith('#') and link not in added_links:
-                              rpc("aria2.addUri", [[link], {"dir": absolute_save_path}])
-                              added_links.add(link)
-                  except Exception: pass
-
-              try:
-                  active = rpc("aria2.tellActive") or []
-                  waiting = rpc("aria2.tellWaiting", [0, 1000]) or []
-                  stopped = rpc("aria2.tellStopped", [0, 1000]) or []
-                  all_tasks = active + waiting + stopped
-
-                  print(f"\n" + "="*50)
-                  print(f"🔄 [GH-Aria2-Filemirage] Progress Update #{update_count} | {timestamp}")
-                  print("-"*50)
-                  
-                  if not all_tasks:
-                      print("📥 Waiting for downloads to be added...")
-                      all_done = False
-                  else:
-                      all_done = True
-                      for t in all_tasks:
-                          name = get_task_name(t)
-                          status = t.get('status')
-                          total = int(t.get('totalLength', 0))
-                          completed = int(t.get('completedLength', 0))
-                          speed = int(t.get('downloadSpeed', 0))
-                          
-                          prog = (completed / total * 100) if total > 0 else 0
-                          if status == 'complete': prog = 100
-                          
-                          speed_mb = speed / (1024 * 1024)
-                          eta_sec = (total - completed) / speed if speed > 0 and total > 0 else -1
-                          
-                          print(f"📥 [{status.upper()}] {name} | {prog:.1f}% | Speed: {speed_mb:.2f} MB/s | ETA: {fmt_eta(eta_sec)}")
-                          if status not in ['complete', 'error', 'removed']:
-                              all_done = False
-
-                  print("="*50 + "\n")
-                  if all_done and all_tasks: break
-              except Exception: pass
-              time.sleep(10)
-          EOF
-
-          pkill aria2c || true
-          sleep 2
-
-      - name: Smart Zipping & Splitting
+      - name: Upload Test File to Buzzheavier
         run: |
           python3 - << 'EOF'
-          import os, shutil, subprocess
-          root_dir = "downloaded_files"
-          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
-          media_ext = video_ext + sub_ext
-          max_size_bytes = 7000 * 1024 * 1024
+          import os
+          import requests
 
-          def get_dir_size(p):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+          api_key = os.environ.get("BUZZHEAVIER_API_KEY")
+          file_path = "test_folder/sample_test.txt"
+          filename = os.path.basename(file_path)
 
-          if os.path.exists(root_dir):
-              for item in os.listdir(root_dir):
-                  item_path = os.path.join(root_dir, item)
-                  if os.path.isdir(item_path):
-                      # Recursively find all video files in all subfolders
-                      videos = [
-                          f for r, _, files in os.walk(item_path)
-                          for f in files if f.lower().endswith(video_ext)
-                      ]
-                      
-                      if len(videos) > 3:
-                          zip_name = f"{item}.zip"
-                          folder_size = get_dir_size(item_path)
-                          orig = os.getcwd()
-                          os.chdir(root_dir)
-                          if folder_size > max_size_bytes:
-                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                          else:
-                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                          os.chdir(orig)
-                          shutil.rmtree(item_path)
-                      else:
-                          for r, _, files in os.walk(item_path):
-                              for f in files:
-                                  if f.lower().endswith(media_ext):
-                                      dst = os.path.join(root_dir, f)
-                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                          shutil.rmtree(item_path, ignore_errors=True)
+          if not api_key:
+              print("❌ Error: BUZZHEAVIER_API_KEY is not set.")
+              exit(1)
+
+          if not os.path.exists(file_path):
+              print(f"❌ Error: Test file {file_path} does not exist.")
+              exit(1)
+
+          # Buzzheavier uses a PUT request structure: https://w.buzzheavier.com/{filename}
+          upload_url = f"https://w.buzzheavier.com/{filename}"
+          headers = {
+              "Authorization": f"Bearer {api_key}"
+          }
+
+          print(f"📤 Uploading {filename} to Buzzheavier...")
+
+          try:
+              with open(file_path, "rb") as f:
+                  response = requests.put(upload_url, headers=headers, data=f)
+
+              print(f"Status Code: {response.status_code}")
+              print(f"Response Body: {response.text}")
+
+              if response.status_code in [200, 201]:
+                  print(f"✅ Successfully uploaded {filename}!")
+              else:
+                  print(f"❌ Failed to upload {filename}.")
+                  exit(1)
+
+          except Exception as e:
+              print(f"❌ Exception during upload: {e}")
+              exit(1)
           EOF
-
-      - name: Upload to Filemirage
-        run: |
-          echo "Fetching Filemirage server..."
-          SERVER=$(curl -s https://filemirage.com/api/servers | jq -r '.data.server // empty')
-          
-          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
-              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
-              exit 1
-          fi
-          echo "🌐 Target Server: $SERVER"
-
-          if [ ! -d "$FOLDER_PATH" ]; then
-              echo "❌ Error: Folder $FOLDER_PATH does not exist."
-              exit 1
-          fi
-
-          find "$FOLDER_PATH" -type f | sort | while read -r FILE; do
-              # Added .aria2 extension to the ignore list
-              if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* || "$FILE" == *".aria2" ]]; then continue; fi
-              FILENAME=$(basename "$FILE")
-              echo "📤 Uploading: $FILENAME..."
-              
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
-                  -F "file=@$FILE;filename=$FILENAME" \
-                  "$SERVER/upload.php")
-              
-              if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
-                  echo "✅ Successfully uploaded: $FILENAME"
-              else
-                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
-                  exit 1
-              fi
-          done
